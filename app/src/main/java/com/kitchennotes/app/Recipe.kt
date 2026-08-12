@@ -19,12 +19,12 @@ data class RecipeStep(val text: String, val imagePath: String = "") {
 
 data class ReferenceVideo(
     val url: String,
-    val title: String = "抖音参考视频",
+    val title: String = "参考视频",
     val coverUrl: String = "",
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     fun toJson() = JSONObject().put("url", url).put("title", title).put("coverUrl", coverUrl).put("updatedAt", updatedAt)
-    companion object { fun fromJson(o: JSONObject) = ReferenceVideo(o.optString("url"), o.optString("title", "抖音参考视频"), o.optString("coverUrl"), o.optLong("updatedAt")) }
+    companion object { fun fromJson(o: JSONObject) = ReferenceVideo(o.optString("url"), o.optString("title", "参考视频"), o.optString("coverUrl"), o.optLong("updatedAt")) }
 }
 
 data class Recipe(
@@ -92,4 +92,26 @@ fun extractSharedHttpsUrl(text: String): String? {
                 uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()
             }.getOrDefault(false)
         }
+}
+
+data class VideoShareHints(val author: String = "", val title: String = "")
+
+private val douyinShareHintPattern = Regex("看看\\s*【([^】]+)的作品】\\s*([^#\\n]+)")
+
+/** Extracts the author and title embedded in a normal Chinese short-video share message. */
+fun extractVideoShareHints(text: String): VideoShareHints {
+    val match = douyinShareHintPattern.find(text) ?: return VideoShareHints()
+    val author = match.groupValues[1].trim()
+    val title = match.groupValues[2]
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .trimEnd('！', '!', '。', '.')
+    return VideoShareHints(author, title)
+}
+
+fun formatReferenceVideoTitle(author: String, title: String): String = when {
+    author.isNotBlank() && title.isNotBlank() -> "$author · $title"
+    title.isNotBlank() -> title
+    author.isNotBlank() -> author
+    else -> "参考视频"
 }

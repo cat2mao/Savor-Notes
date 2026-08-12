@@ -503,14 +503,24 @@ fun RecipeDetailScreen(
                     shape = RoundedCornerShape(14.dp),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
-                    Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        VideoCover(video.coverUrl, Modifier.size(width = 60.dp, height = 48.dp).clip(RoundedCornerShape(10.dp)))
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(video.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text("在抖音中观看", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                    Column {
+                        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+                            VideoCover(video.coverUrl, Modifier.fillMaxSize())
+                            Surface(
+                                modifier = Modifier.align(Alignment.Center),
+                                color = Color.Black.copy(alpha = 0.48f),
+                                contentColor = Color.White,
+                                shape = RoundedCornerShape(24.dp)
+                            ) { Icon(Icons.Default.PlayCircle, "播放原视频", Modifier.padding(10.dp).size(28.dp)) }
                         }
-                        Icon(Icons.Default.PlayCircle, null, tint = MaterialTheme.colorScheme.primary)
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(video.title, Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.width(8.dp))
+                            Text("观看原视频", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                 }
             }
@@ -554,13 +564,12 @@ fun RecipeEditorScreen(
     var customTagInput by rememberSaveable(draft.id) { mutableStateOf("") }
     var stepText by rememberSaveable(draft.id) { mutableStateOf("") }
     var editingStepIndex by rememberSaveable(draft.id) { mutableStateOf<Int?>(null) }
-    var videoUrl by rememberSaveable(draft.id) { mutableStateOf(draft.videos.firstOrNull()?.url.orEmpty()) }
+    var videoUrl by rememberSaveable(draft.id) { mutableStateOf(vm.consumeSharedVideoText()) }
     var photoTarget by remember { mutableStateOf(PhotoTarget.COVER) }
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmDiscard by remember { mutableStateOf(false) }
     var revealedDefaultTag by remember { mutableStateOf<String?>(null) }
     var deletingCustomTag by remember { mutableStateOf<String?>(null) }
-    val originalVideoInput = remember(draft.id) { draft.videos.firstOrNull()?.url.orEmpty() }
     val selectedStep = editingStepIndex?.let(draft.steps::getOrNull)
     val hasPendingStepEdit = if (selectedStep == null) {
         stepText.isNotBlank() || vm.stepImageCandidate.isNotBlank()
@@ -569,7 +578,7 @@ fun RecipeEditorScreen(
     }
     val hasLocalChanges = ingredientName.isNotBlank() || ingredientAmount.isNotBlank() ||
         ingredientUnit.isNotBlank() || customTagInput.isNotBlank() || hasPendingStepEdit ||
-        videoUrl != originalVideoInput
+        videoUrl.isNotBlank()
     val hasPendingChanges = vm.hasUnsavedChanges || hasLocalChanges
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { vm.copyImage(it, photoTarget) }
@@ -824,15 +833,27 @@ fun RecipeEditorScreen(
             EditorSection("参考视频") {
                 draft.videos.forEach { video ->
                     OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
-                        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            VideoCover(video.coverUrl, Modifier.size(width = 54.dp, height = 44.dp).clip(RoundedCornerShape(9.dp)))
-                            Column(Modifier.weight(1f).padding(horizontal = 9.dp)) {
-                                Text(video.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(video.url, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Box {
+                            Column {
+                                VideoCover(
+                                    video.coverUrl,
+                                    Modifier.fillMaxWidth().height(154.dp).clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
+                                )
+                                Text(
+                                    video.title,
+                                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
-                            IconButton(onClick = { vm.updateDraft { it.copy(videos = it.videos - video) } }) {
-                                Icon(Icons.Default.Close, "移除视频")
-                            }
+                            Surface(
+                                onClick = { vm.updateDraft { it.copy(videos = it.videos - video) } },
+                                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(32.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color.Black.copy(alpha = 0.55f),
+                                contentColor = Color.White
+                            ) { Icon(Icons.Default.Close, "移除视频", Modifier.padding(7.dp)) }
                         }
                     }
                 }
@@ -840,17 +861,21 @@ fun RecipeEditorScreen(
                     videoUrl,
                     { videoUrl = it },
                     Modifier.fillMaxWidth(),
-                    label = { Text("粘贴抖音分享文本或链接") },
-                    supportingText = { Text("自动提取其中的 HTTPS 链接；解析失败仍可手动保存。") }
+                    label = { Text("粘贴视频分享文案或链接") },
+                    supportingText = { Text("支持抖音及其他视频网站；会自动提取其中的 HTTPS 链接和公开标题。") }
                 )
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = {
                         if (videoUrl.isNotBlank()) vm.resolveVideo(videoUrl) { video ->
                             vm.updateDraft { it.copy(videos = it.videos.filterNot { old -> old.url == video.url } + video) }
+                            videoUrl = ""
                         }
                     }) { Icon(Icons.Default.Link, null); Text(" 添加链接") }
                     OutlinedButton(onClick = {
-                        if (videoUrl.isNotBlank()) vm.createAiDraft(videoUrl, draft) { vm.updateDraft { _ -> it } }
+                        if (videoUrl.isNotBlank()) vm.createAiDraft(videoUrl, draft) {
+                            vm.updateDraft { _ -> it }
+                            videoUrl = ""
+                        }
                     }) { Icon(Icons.Default.AutoAwesome, null); Text(" AI 总结") }
                 }
             }

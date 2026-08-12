@@ -38,6 +38,14 @@ class RecipeJsonTest {
         assertEquals("https://v.douyin.com/AbC123/", extractSharedHttpsUrl(text))
     }
 
+    @Test fun extracts_author_and_title_from_douyin_share_text() {
+        val text = "2.56 复制打开抖音，看看【村驴的作品】下饭菜的经典，回锅肉家庭版保姆级教程！ # 我的厨 https://v.douyin.com/AUjlOIEecoQ/"
+        val hints = extractVideoShareHints(text)
+        assertEquals("村驴", hints.author)
+        assertEquals("下饭菜的经典，回锅肉家庭版保姆级教程", hints.title)
+        assertEquals("村驴 · 下饭菜的经典，回锅肉家庭版保姆级教程", formatReferenceVideoTitle(hints.author, hints.title))
+    }
+
     @Test fun rejects_non_https_and_oversized_share_text() {
         assertEquals(null, extractSharedHttpsUrl("打开 http://example.com/video"))
         assertEquals(null, extractSharedHttpsUrl("x".repeat(32_769) + " https://example.com"))

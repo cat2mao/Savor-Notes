@@ -53,7 +53,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
 class MainActivity : ComponentActivity() {
-    private var sharedUrl by mutableStateOf<String?>(null)
+    private var sharedText by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -65,7 +65,7 @@ class MainActivity : ComponentActivity() {
             }
             val vm: RecipeViewModel = viewModel(factory = factory)
             SavorNotesTheme {
-                SavorNotesApp(vm, sharedUrl) { sharedUrl = null }
+                SavorNotesApp(vm, sharedText) { sharedText = null }
             }
         }
     }
@@ -77,8 +77,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun acceptShareIntent(intent: Intent?) {
-        sharedUrl = if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
-            extractSharedHttpsUrl(intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty())
+        sharedText = if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+            intent.getStringExtra(Intent.EXTRA_TEXT)
+                ?.takeIf { extractSharedHttpsUrl(it) != null }
         } else {
             null
         }
@@ -134,14 +135,19 @@ class RecipeViewModel(
         get() = savedStateHandle[PENDING_CAMERA_TARGET]
         set(value) { savedStateHandle[PENDING_CAMERA_TARGET] = value }
 
-    fun beginEditing(recipe: Recipe?, sharedVideoUrl: String? = null) {
+    fun beginEditing(recipe: Recipe?, sharedVideoText: String? = null) {
         val initial = recipe ?: Recipe(
                 name = "",
-                videos = sharedVideoUrl?.let { listOf(ReferenceVideo(it)) }.orEmpty()
+                videos = emptyList()
             )
         setBaseline(initial)
         setDraft(initial)
+        savedStateHandle[SHARED_VIDEO_TEXT_KEY] = sharedVideoText
         replaceStepImageCandidate("")
+    }
+
+    fun consumeSharedVideoText(): String = savedStateHandle.get<String>(SHARED_VIDEO_TEXT_KEY).orEmpty().also {
+        savedStateHandle[SHARED_VIDEO_TEXT_KEY] = null
     }
 
     fun updateDraft(change: (Recipe) -> Recipe) {
@@ -357,29 +363,11 @@ class RecipeViewModel(
         message = "连通成功，找到 ${models.size} 个模型"
     }
 
-    fun resolveVideo(input: String, result: (ReferenceVideo) -> Unit) = runIo("视频解析失败", {
-        val url = extractSharedHttpsUrl(input) ?: error("请输入有效的 HTTPS 分享链接")
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.instanceFollowRedirects = true
-        connection.connectTimeout = 10_000
-        connection.readTimeout = 10_000
-        try {
-            require(connection.responseCode in 200..299) { "页面返回 ${connection.responseCode}" }
-            val html = connection.inputStream.bufferedReader().use { it.readText() }
-            val title = Regex("<title[^>]*>(.*?)</title>", RegexOption.IGNORE_CASE)
-                .find(html)?.groupValues?.get(1)
-                ?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
-            val cover = listOf(
-                Regex("(?:property|name)=[\"']og:image[\"'][^>]*content=[\"']([^\"']+)", RegexOption.IGNORE_CASE),
-                Regex("content=[\"']([^\"']+)[\"'][^>]*(?:property|name)=[\"']og:image[\"']", RegexOption.IGNORE_CASE)
-            ).firstNotNullOfOrNull { it.find(html)?.groupValues?.get(1) }.orEmpty()
-            ReferenceVideo(url, title.ifBlank { "抖音参考视频" }, cover)
-        } finally {
-            connection.disconnect()
-        }
+    fun resolveVideo(input: String, result: (ReferenceVideo) -> Unit) = runIo("视频添加失败", {
+        resolveVideoReference(input)
     }) { video ->
         result(video)
-        if (video.title == "抖音参考视频") message = "未能读取公开视频信息，已保存链接"
+        if (video.title == "参考视频") message = "未能读取公开视频标题，已保存原视频链接"
     }
 
     fun createAiDraft(input: String, current: Recipe, result: (Recipe) -> Unit) {
@@ -394,31 +382,21 @@ class RecipeViewModel(
             return
         }
         runIo("AI 总结失败", {
-            val prompt = "根据这个公开视频链接尝试整理菜谱：$url。仅输出 JSON：{name,ingredients:[{name,amount,unit}],steps:[string],notes,tags:[string]}。无法确认时留空，不要编造。"
-            val body = org.json.JSONObject()
-                .put("model", provider.model)
-                .put("messages", org.json.JSONArray().put(
-                    org.json.JSONObject().put("role", "user").put("content", prompt)
-                )).toString()
-            val connection = (
-                URL(provider.baseUrl.trimEnd('/') + "/chat/completions").openConnection()
-                    as HttpURLConnection
-                ).apply {
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
-                connectTimeout = 20_000
-                readTimeout = 40_000
-            }
-            try {
-                connection.outputStream.bufferedWriter().use { it.write(body) }
-                require(connection.responseCode in 200..299) { "服务返回 ${connection.responseCode}" }
-                val raw = org.json.JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-                    .getJSONArray("choices").getJSONObject(0).getJSONObject("message")
-                    .optString("content").trim()
-                    .removePrefix("```json").removePrefix("```").trim()
-                    .removeSuffix("```").trim()
+            val video = resolveVideoReference(input)
+            val hints = extractVideoShareHints(input)
+            val prompt = """
+                请把以下短视频分享内容整理成一份中文菜谱草稿。优先从分享文案、已识别的作者和标题提炼信息；若你的模型能力可以读取公开视频链接或分析封面，可据此补充，但看不到的信息必须留空，不能编造。
+
+                原始分享文案：$input
+                原视频链接：${video.url}
+                已识别作者：${hints.author.ifBlank { "未知" }}
+                已识别标题：${video.title}
+
+                只输出一个有效 JSON 对象，不要 Markdown：
+                {"name":"","cuisineTags":[""],"featureTags":[""],"ingredients":[{"name":"","amount":"","unit":""}],"steps":[""],"notes":""}
+                标签尽量使用：鲁菜、川菜、粤菜、湘菜、凉菜、热菜、主食、汤羹、下饭、低脂、快手、微辣、家常、宴客；不确定时返回空数组。
+            """.trimIndent()
+            val raw = requestRecipeSummary(provider, prompt, video.coverUrl)
                 val json = org.json.JSONObject(raw)
                 val ingredients = json.optJSONArray("ingredients")?.let { array ->
                     List(array.length()) { Ingredient.fromJson(array.getJSONObject(it)) }
@@ -426,23 +404,102 @@ class RecipeViewModel(
                 val steps = json.optJSONArray("steps")?.let { array ->
                     List(array.length()) { RecipeStep(array.optString(it)) }
                 }.orEmpty()
-                val tags = json.optJSONArray("tags")?.let { array ->
+                val legacyTags = json.optJSONArray("tags")?.let { array ->
                     List(array.length()) { array.optString(it) }.filter(String::isNotBlank).toSet()
                 }.orEmpty()
+                val cuisineTags = json.optJSONArray("cuisineTags")?.let { array ->
+                    List(array.length()) { array.optString(it) }.filter(String::isNotBlank).toSet()
+                }.orEmpty() + legacyTags.intersect(defaultCuisineTags.toSet())
+                val featureTags = json.optJSONArray("featureTags")?.let { array ->
+                    List(array.length()) { array.optString(it) }.filter(String::isNotBlank).toSet()
+                }.orEmpty() + (legacyTags - defaultCuisineTags.toSet())
                 current.copy(
                     name = json.optString("name").ifBlank { current.name },
                     ingredients = ingredients.ifEmpty { current.ingredients },
                     steps = steps.ifEmpty { current.steps },
                     notes = json.optString("notes").ifBlank { current.notes },
-                    featureTags = current.featureTags + tags,
-                    videos = current.videos.filterNot { it.url == url } + ReferenceVideo(url)
+                    cuisineTags = current.cuisineTags + cuisineTags,
+                    featureTags = current.featureTags + featureTags,
+                    videos = current.videos.filterNot { it.url == url } + video
                 )
-            } finally {
-                connection.disconnect()
-            }
         }) { draft ->
             result(draft)
             message = "AI 草稿已生成，请逐项确认后保存"
+        }
+    }
+
+    private fun resolveVideoReference(input: String): ReferenceVideo {
+        val url = extractSharedHttpsUrl(input) ?: error("请输入有效的 HTTPS 分享链接")
+        val hints = extractVideoShareHints(input)
+        var publicTitle = ""
+        var publicDescription = ""
+        var publicAuthor = ""
+        var cover = ""
+        runCatching {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = true
+                connectTimeout = 10_000
+                readTimeout = 10_000
+                setRequestProperty("User-Agent", "Mozilla/5.0 (Android) SavorNotes/1.0")
+            }
+            try {
+                if (connection.responseCode in 200..299) {
+                    val html = connection.inputStream.bufferedReader().use { it.readText().take(750_000) }
+                    publicTitle = html.metaContent("og:title").ifBlank { html.htmlTitle() }
+                    publicDescription = html.metaContent("og:description")
+                    publicAuthor = html.metaContent("author")
+                    cover = html.metaContent("og:image")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+        val title = hints.title.ifBlank { publicDescription }.ifBlank { publicTitle.cleanPageTitle() }
+        val author = hints.author.ifBlank { publicAuthor }
+        return ReferenceVideo(url, formatReferenceVideoTitle(author, title), cover)
+    }
+
+    private fun requestRecipeSummary(provider: ProviderConfig, prompt: String, coverUrl: String): String {
+        fun request(content: Any): String {
+            val body = org.json.JSONObject()
+                .put("model", provider.model)
+                .put("messages", org.json.JSONArray().put(
+                    org.json.JSONObject().put("role", "user").put("content", content)
+                )).toString()
+            val connection = (URL(provider.baseUrl.trimEnd('/') + "/chat/completions").openConnection()
+                as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
+                connectTimeout = 20_000
+                readTimeout = 60_000
+            }
+            try {
+                connection.outputStream.bufferedWriter().use { it.write(body) }
+                val response = (if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                require(connection.responseCode in 200..299) {
+                    "服务返回 ${connection.responseCode}${response.take(240).takeIf(String::isNotBlank)?.let { "：$it" }.orEmpty()}"
+                }
+                return org.json.JSONObject(response)
+                    .getJSONArray("choices").getJSONObject(0).getJSONObject("message")
+                    .optString("content").toRecipeJson()
+            } finally {
+                connection.disconnect()
+            }
+        }
+
+        if (coverUrl.isBlank()) return request(prompt)
+        val visionContent = org.json.JSONArray()
+            .put(org.json.JSONObject().put("type", "text").put("text", prompt))
+            .put(org.json.JSONObject().put("type", "image_url").put(
+                "image_url", org.json.JSONObject().put("url", coverUrl)
+            ))
+        return try {
+            request(visionContent)
+        } catch (_: Exception) {
+            request(prompt)
         }
     }
 
@@ -489,9 +546,39 @@ class RecipeViewModel(
         private const val EDITOR_DRAFT_KEY = "editor_draft"
         private const val EDITOR_BASELINE_KEY = "editor_baseline"
         private const val STEP_IMAGE_CANDIDATE_KEY = "step_image_candidate"
+        private const val SHARED_VIDEO_TEXT_KEY = "shared_video_text"
         private const val PENDING_CAMERA_PATH = "pending_camera_path"
         private const val PENDING_CAMERA_TARGET = "pending_camera_target"
     }
+}
+
+private fun String.metaContent(name: String): String {
+    val metaTags = Regex("<meta\\b[^>]*>", RegexOption.IGNORE_CASE).findAll(this)
+    return metaTags.firstNotNullOfOrNull { tag ->
+        val value = tag.value
+        val key = Regex("(?:property|name)=[\"']${Regex.escape(name)}[\"']", RegexOption.IGNORE_CASE)
+        if (key.containsMatchIn(value)) {
+            Regex("content=[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE)
+                .find(value)?.groupValues?.get(1)?.htmlUnescape()
+        } else null
+    }.orEmpty()
+}
+
+private fun String.htmlTitle(): String = Regex("<title[^>]*>(.*?)</title>", RegexOption.IGNORE_CASE)
+    .find(this)?.groupValues?.get(1)?.htmlUnescape().orEmpty()
+
+private fun String.htmlUnescape(): String = replace("&amp;", "&").replace("&quot;", "\"")
+    .replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">")
+    .replace(Regex("\\s+"), " ").trim()
+
+private fun String.cleanPageTitle(): String = replace(Regex("\\s*[-_|]\\s*(抖音|TikTok).*", RegexOption.IGNORE_CASE), "").trim()
+
+private fun String.toRecipeJson(): String {
+    val trimmed = trim().removePrefix("```json").removePrefix("```").trim().removeSuffix("```").trim()
+    val start = trimmed.indexOf('{')
+    val end = trimmed.lastIndexOf('}')
+    require(start >= 0 && end > start) { "AI 未返回有效的菜谱 JSON" }
+    return trimmed.substring(start, end + 1)
 }
 
 enum class PhotoTarget { COVER, STEP }
