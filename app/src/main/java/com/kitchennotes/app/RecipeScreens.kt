@@ -52,7 +52,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -69,7 +68,6 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.LocalDining
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Search
@@ -503,24 +501,14 @@ fun RecipeDetailScreen(
                     shape = RoundedCornerShape(14.dp),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
-                    Column {
-                        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
-                            VideoCover(video.coverUrl, Modifier.fillMaxSize())
-                            Surface(
-                                modifier = Modifier.align(Alignment.Center),
-                                color = Color.Black.copy(alpha = 0.48f),
-                                contentColor = Color.White,
-                                shape = RoundedCornerShape(24.dp)
-                            ) { Icon(Icons.Default.PlayCircle, "播放原视频", Modifier.padding(10.dp).size(28.dp)) }
-                        }
-                        Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(video.title, Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Spacer(Modifier.width(8.dp))
+                    Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        VideoCover(video.coverUrl, Modifier.size(width = 60.dp, height = 48.dp).clip(RoundedCornerShape(10.dp)))
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(video.title, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             Text("观看原视频", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
                         }
+                        Icon(Icons.Default.PlayCircle, null, tint = MaterialTheme.colorScheme.primary)
                     }
                 }
             }
@@ -833,27 +821,24 @@ fun RecipeEditorScreen(
             EditorSection("参考视频") {
                 draft.videos.forEach { video ->
                     OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
-                        Box {
-                            Column {
-                                VideoCover(
-                                    video.coverUrl,
-                                    Modifier.fillMaxWidth().height(154.dp).clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp))
-                                )
-                                Text(
-                                    video.title,
-                                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            VideoCover(video.coverUrl, Modifier.size(width = 54.dp, height = 44.dp).clip(RoundedCornerShape(9.dp)))
+                            OutlinedTextField(
+                                value = video.title,
+                                onValueChange = { title ->
+                                    vm.updateDraft { recipe ->
+                                        recipe.copy(videos = recipe.videos.map { existing ->
+                                            if (existing.url == video.url) existing.copy(title = title) else existing
+                                        })
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).padding(horizontal = 9.dp),
+                                label = { Text("视频标题") },
+                                singleLine = true
+                            )
+                            IconButton(onClick = { vm.updateDraft { it.copy(videos = it.videos - video) } }) {
+                                Icon(Icons.Default.Close, "移除视频")
                             }
-                            Surface(
-                                onClick = { vm.updateDraft { it.copy(videos = it.videos - video) } },
-                                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(32.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                color = Color.Black.copy(alpha = 0.55f),
-                                contentColor = Color.White
-                            ) { Icon(Icons.Default.Close, "移除视频", Modifier.padding(7.dp)) }
                         }
                     }
                 }
@@ -871,12 +856,6 @@ fun RecipeEditorScreen(
                             videoUrl = ""
                         }
                     }) { Icon(Icons.Default.Link, null); Text(" 添加链接") }
-                    OutlinedButton(onClick = {
-                        if (videoUrl.isNotBlank()) vm.createAiDraft(videoUrl, draft) {
-                            vm.updateDraft { _ -> it }
-                            videoUrl = ""
-                        }
-                    }) { Icon(Icons.Default.AutoAwesome, null); Text(" AI 总结") }
                 }
             }
 
@@ -954,7 +933,7 @@ private fun EditorSection(title: String, content: @Composable ColumnScope.() -> 
 }
 
 @Composable
-fun SettingsScreen(vm: RecipeViewModel, onEditProvider: (String) -> Unit) {
+fun SettingsScreen(vm: RecipeViewModel) {
     val backup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri -> uri?.let(vm::export) }
     val restore = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(vm::import) }
     LazyColumn(
@@ -965,40 +944,13 @@ fun SettingsScreen(vm: RecipeViewModel, onEditProvider: (String) -> Unit) {
         item { Text("设置", style = MaterialTheme.typography.headlineLarge) }
         item {
             SettingsCard("数据备份") {
-                Text("备份包含菜谱和应用内图片，AI 密钥不会导出。可在系统文件选择器中直接选择网盘位置。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("备份包含菜谱和应用内图片。可在系统文件选择器中直接选择网盘位置。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { backup.launch("清欢小谱_${System.currentTimeMillis()}.zip") }) {
                         Icon(Icons.Default.UploadFile, null); Text(" 备份")
                     }
                     OutlinedButton(onClick = { restore.launch(arrayOf("application/zip", "application/octet-stream")) }) {
                         Icon(Icons.Default.Download, null); Text(" 恢复")
-                    }
-                }
-            }
-        }
-        item {
-            SettingsCard("AI 服务") {
-                Text("密钥使用 Android 加密存储，模型请求直接从本机发送。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                providerTemplates.forEach { template ->
-                    OutlinedButton(onClick = { onEditProvider(template.id) }, Modifier.fillMaxWidth()) { Text("配置 ${template.name}") }
-                }
-                OutlinedButton(onClick = { onEditProvider("custom_${System.currentTimeMillis()}") }, Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Add, null); Text(" 添加自定义 OpenAI 兼容服务")
-                }
-            }
-        }
-        if (vm.providers.isNotEmpty()) item {
-            SettingsCard("已配置服务") {
-                vm.providers.forEach { provider ->
-                    OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(provider.name, fontWeight = FontWeight.Bold)
-                                Text(provider.model.ifBlank { "未选择默认模型" }, style = MaterialTheme.typography.labelMedium)
-                            }
-                            TextButton(onClick = { vm.makeDefault(provider.id) }) { Text("设为默认") }
-                            IconButton(onClick = { onEditProvider(provider.id) }) { Icon(Icons.Default.Edit, "编辑") }
-                        }
                     }
                 }
             }
@@ -1018,53 +970,6 @@ private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> U
             Text(title, style = MaterialTheme.typography.titleLarge)
             content()
         }
-    }
-}
-
-@Composable
-fun ProviderEditorScreen(initial: ProviderConfig, vm: RecipeViewModel, onBack: () -> Unit) {
-    var name by rememberSaveable(initial.id) { mutableStateOf(initial.name) }
-    var endpoint by rememberSaveable(initial.id) { mutableStateOf(initial.baseUrl) }
-    var key by rememberSaveable(initial.id) { mutableStateOf(initial.apiKey) }
-    var model by rememberSaveable(initial.id) { mutableStateOf(initial.model) }
-    var models by remember { mutableStateOf(emptyList<String>()) }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
-            Text("AI 服务配置", style = MaterialTheme.typography.headlineMedium)
-        }
-        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("服务名称") })
-        OutlinedTextField(endpoint, { endpoint = it }, Modifier.fillMaxWidth(), label = { Text("兼容 API 地址") })
-        OutlinedTextField(
-            key,
-            { key = it },
-            Modifier.fillMaxWidth(),
-            label = { Text("API Key") },
-            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation()
-        )
-        OutlinedTextField(model, { model = it }, Modifier.fillMaxWidth(), label = { Text("默认模型") })
-        OutlinedButton(onClick = {
-            vm.testProvider(ProviderConfig(initial.id, name, endpoint, key, model)) {
-                models = it
-                if (model.isBlank() && it.isNotEmpty()) model = it.first()
-            }
-        }) { Icon(Icons.Default.NetworkCheck, null); Text(" 测试连通性并获取模型") }
-        if (models.isNotEmpty()) {
-            Text("可用模型", style = MaterialTheme.typography.titleMedium)
-            models.forEach { available ->
-                OutlinedButton(onClick = { model = available }, Modifier.fillMaxWidth()) {
-                    if (model == available) Icon(Icons.Default.Check, null)
-                    Text(available, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
-        Button(
-            onClick = { vm.saveProvider(ProviderConfig(initial.id, name, endpoint, key, model)); onBack() },
-            Modifier.fillMaxWidth().height(50.dp),
-            shape = RoundedCornerShape(15.dp)
-        ) { Text("保存") }
-        Spacer(Modifier.height(32.dp))
     }
 }
 

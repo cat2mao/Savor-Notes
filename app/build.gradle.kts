@@ -14,8 +14,8 @@ android {
         applicationId = "com.kitchennotes.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {
@@ -50,7 +50,6 @@ dependencies {
     implementation("androidx.navigation3:navigation3-runtime:1.0.1")
     implementation("androidx.navigation3:navigation3-ui:1.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-core:1.9.0")
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("io.coil-kt:coil-compose:2.7.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

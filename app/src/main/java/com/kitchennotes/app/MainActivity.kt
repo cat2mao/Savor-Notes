@@ -92,7 +92,6 @@ class RecipeViewModel(
 ) : AndroidViewModel(application) {
     private val repo = RecipeRepository(getApplication<Application>())
     private val backup = BackupManager(getApplication<Application>())
-    private val providerStore = ProviderStore(getApplication<Application>())
 
     var recipes by mutableStateOf(repo.load())
         private set
@@ -108,8 +107,6 @@ class RecipeViewModel(
         private set
     val availableDefaultTags: Set<String>
         get() = (defaultCuisineTags + defaultFeatureTags).toSet() - removedDefaultTags
-    var providers by mutableStateOf(providerStore.load())
-        private set
     var message by mutableStateOf<String?>(
         if (repo.recoveryAvailable) "检测到损坏的菜谱数据，原始内容已保留为恢复副本" else null
     )
@@ -340,92 +337,11 @@ class RecipeViewModel(
         message = "已智能合并 ${payload.recipes.size} 条菜谱"
     }
 
-    fun provider(id: String): ProviderConfig =
-        providers.firstOrNull { it.id == id }
-            ?: providerTemplates.firstOrNull { it.id == id }
-            ?: ProviderConfig(id, "自定义兼容服务", "")
-
-    fun saveProvider(config: ProviderConfig) {
-        providers = providers.filterNot { it.id == config.id } + config
-        providerStore.save(providers)
-    }
-
-    fun makeDefault(id: String) {
-        providerStore.setDefault(id)
-        message = "已设为默认模型服务"
-    }
-
-    fun testProvider(config: ProviderConfig, result: (List<String>) -> Unit) = runIo(
-        "连通失败",
-        { AiClient.test(config).getOrThrow() }
-    ) { models ->
-        result(models)
-        message = "连通成功，找到 ${models.size} 个模型"
-    }
-
     fun resolveVideo(input: String, result: (ReferenceVideo) -> Unit) = runIo("视频添加失败", {
         resolveVideoReference(input)
     }) { video ->
         result(video)
         if (video.title == "参考视频") message = "未能读取公开视频标题，已保存原视频链接"
-    }
-
-    fun createAiDraft(input: String, current: Recipe, result: (Recipe) -> Unit) {
-        val url = extractSharedHttpsUrl(input)
-        if (url == null) {
-            message = "请输入有效的 HTTPS 分享链接"
-            return
-        }
-        val provider = providerStore.default()
-        if (provider == null || provider.apiKey.isBlank() || provider.model.isBlank()) {
-            message = "请先在设置中配置并设定默认 AI 服务"
-            return
-        }
-        runIo("AI 总结失败", {
-            val video = resolveVideoReference(input)
-            val hints = extractVideoShareHints(input)
-            val prompt = """
-                请把以下短视频分享内容整理成一份中文菜谱草稿。优先从分享文案、已识别的作者和标题提炼信息；若你的模型能力可以读取公开视频链接或分析封面，可据此补充，但看不到的信息必须留空，不能编造。
-
-                原始分享文案：$input
-                原视频链接：${video.url}
-                已识别作者：${hints.author.ifBlank { "未知" }}
-                已识别标题：${video.title}
-
-                只输出一个有效 JSON 对象，不要 Markdown：
-                {"name":"","cuisineTags":[""],"featureTags":[""],"ingredients":[{"name":"","amount":"","unit":""}],"steps":[""],"notes":""}
-                标签尽量使用：鲁菜、川菜、粤菜、湘菜、凉菜、热菜、主食、汤羹、下饭、低脂、快手、微辣、家常、宴客；不确定时返回空数组。
-            """.trimIndent()
-            val raw = requestRecipeSummary(provider, prompt, video.coverUrl)
-                val json = org.json.JSONObject(raw)
-                val ingredients = json.optJSONArray("ingredients")?.let { array ->
-                    List(array.length()) { Ingredient.fromJson(array.getJSONObject(it)) }
-                }.orEmpty()
-                val steps = json.optJSONArray("steps")?.let { array ->
-                    List(array.length()) { RecipeStep(array.optString(it)) }
-                }.orEmpty()
-                val legacyTags = json.optJSONArray("tags")?.let { array ->
-                    List(array.length()) { array.optString(it) }.filter(String::isNotBlank).toSet()
-                }.orEmpty()
-                val cuisineTags = json.optJSONArray("cuisineTags")?.let { array ->
-                    List(array.length()) { array.optString(it) }.filter(String::isNotBlank).toSet()
-                }.orEmpty() + legacyTags.intersect(defaultCuisineTags.toSet())
-                val featureTags = json.optJSONArray("featureTags")?.let { array ->
-                    List(array.length()) { array.optString(it) }.filter(String::isNotBlank).toSet()
-                }.orEmpty() + (legacyTags - defaultCuisineTags.toSet())
-                current.copy(
-                    name = json.optString("name").ifBlank { current.name },
-                    ingredients = ingredients.ifEmpty { current.ingredients },
-                    steps = steps.ifEmpty { current.steps },
-                    notes = json.optString("notes").ifBlank { current.notes },
-                    cuisineTags = current.cuisineTags + cuisineTags,
-                    featureTags = current.featureTags + featureTags,
-                    videos = current.videos.filterNot { it.url == url } + video
-                )
-        }) { draft ->
-            result(draft)
-            message = "AI 草稿已生成，请逐项确认后保存"
-        }
     }
 
     private fun resolveVideoReference(input: String): ReferenceVideo {
@@ -457,50 +373,6 @@ class RecipeViewModel(
         val title = hints.title.ifBlank { publicDescription }.ifBlank { publicTitle.cleanPageTitle() }
         val author = hints.author.ifBlank { publicAuthor }
         return ReferenceVideo(url, formatReferenceVideoTitle(author, title), cover)
-    }
-
-    private fun requestRecipeSummary(provider: ProviderConfig, prompt: String, coverUrl: String): String {
-        fun request(content: Any): String {
-            val body = org.json.JSONObject()
-                .put("model", provider.model)
-                .put("messages", org.json.JSONArray().put(
-                    org.json.JSONObject().put("role", "user").put("content", content)
-                )).toString()
-            val connection = (URL(provider.baseUrl.trimEnd('/') + "/chat/completions").openConnection()
-                as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Authorization", "Bearer ${provider.apiKey}")
-                connectTimeout = 20_000
-                readTimeout = 60_000
-            }
-            try {
-                connection.outputStream.bufferedWriter().use { it.write(body) }
-                val response = (if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream)
-                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
-                require(connection.responseCode in 200..299) {
-                    "服务返回 ${connection.responseCode}${response.take(240).takeIf(String::isNotBlank)?.let { "：$it" }.orEmpty()}"
-                }
-                return org.json.JSONObject(response)
-                    .getJSONArray("choices").getJSONObject(0).getJSONObject("message")
-                    .optString("content").toRecipeJson()
-            } finally {
-                connection.disconnect()
-            }
-        }
-
-        if (coverUrl.isBlank()) return request(prompt)
-        val visionContent = org.json.JSONArray()
-            .put(org.json.JSONObject().put("type", "text").put("text", prompt))
-            .put(org.json.JSONObject().put("type", "image_url").put(
-                "image_url", org.json.JSONObject().put("url", coverUrl)
-            ))
-        return try {
-            request(visionContent)
-        } catch (_: Exception) {
-            request(prompt)
-        }
     }
 
     override fun onCleared() {
@@ -573,21 +445,12 @@ private fun String.htmlUnescape(): String = replace("&amp;", "&").replace("&quot
 
 private fun String.cleanPageTitle(): String = replace(Regex("\\s*[-_|]\\s*(抖音|TikTok).*", RegexOption.IGNORE_CASE), "").trim()
 
-private fun String.toRecipeJson(): String {
-    val trimmed = trim().removePrefix("```json").removePrefix("```").trim().removeSuffix("```").trim()
-    val start = trimmed.indexOf('{')
-    val end = trimmed.lastIndexOf('}')
-    require(start >= 0 && end > start) { "AI 未返回有效的菜谱 JSON" }
-    return trimmed.substring(start, end + 1)
-}
-
 enum class PhotoTarget { COVER, STEP }
 
 @Serializable data object RecipesRoute : NavKey
 @Serializable data object SettingsRoute : NavKey
 @Serializable data class RecipeDetailRoute(val recipeId: String) : NavKey
 @Serializable data class RecipeEditorRoute(val recipeId: String? = null) : NavKey
-@Serializable data class ProviderEditorRoute(val providerId: String) : NavKey
 
 private data class TopDestination(
     val route: NavKey,
@@ -616,8 +479,7 @@ private fun SavorNotesApp(
         LocalWindowInfo.current.containerSize.width.toDp()
     }
     val isCompact = windowWidth < 840.dp
-    val hideNavigation = current is RecipeEditorRoute ||
-        current is ProviderEditorRoute || (isCompact && current is RecipeDetailRoute)
+    val hideNavigation = current is RecipeEditorRoute || (isCompact && current is RecipeDetailRoute)
 
     LaunchedEffect(vm.message) {
         vm.message?.let {
@@ -729,19 +591,7 @@ private fun SavorNotesApp(
                             }
                         )
                     }
-                    entry<SettingsRoute> {
-                        SettingsScreen(
-                            vm = vm,
-                            onEditProvider = { id -> backStack.add(ProviderEditorRoute(id)) }
-                        )
-                    }
-                    entry<ProviderEditorRoute> { route ->
-                        ProviderEditorScreen(
-                            initial = vm.provider(route.providerId),
-                            vm = vm,
-                            onBack = { backStack.removeLastOrNull() }
-                        )
-                    }
+                    entry<SettingsRoute> { SettingsScreen(vm) }
                 }
             )
         }
