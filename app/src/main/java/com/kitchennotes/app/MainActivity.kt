@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
@@ -92,6 +93,7 @@ class RecipeViewModel(
 ) : AndroidViewModel(application) {
     private val repo = RecipeRepository(getApplication<Application>())
     private val backup = BackupManager(getApplication<Application>())
+    private val aiService = AiServiceSettings(getApplication<Application>())
 
     var recipes by mutableStateOf(repo.load())
         private set
@@ -110,6 +112,12 @@ class RecipeViewModel(
     var message by mutableStateOf<String?>(
         if (repo.recoveryAvailable) "检测到损坏的菜谱数据，原始内容已保留为恢复副本" else null
     )
+    var aiConfig by mutableStateOf(aiService.read())
+        private set
+    var isAiAnalyzing by mutableStateOf(false)
+        private set
+    var isAiTesting by mutableStateOf(false)
+        private set
 
     var editorDraft by mutableStateOf(
         savedStateHandle.get<String>(EDITOR_DRAFT_KEY)?.let { raw ->
@@ -344,6 +352,69 @@ class RecipeViewModel(
         if (video.title == "参考视频") message = "未能读取公开视频标题，已保存原视频链接"
     }
 
+    fun saveAiConfig(endpoint: String, model: String, apiKey: String?): Boolean {
+        val normalizedEndpoint = endpoint.trim()
+        if (!normalizedEndpoint.startsWith("https://")) {
+            message = "AI 接口地址必须以 HTTPS 开头"
+            return false
+        }
+        if (model.isBlank()) {
+            message = "请填写模型 ID 或推理接入点"
+            return false
+        }
+        val endpointChanged = normalizedEndpoint != aiConfig.endpoint
+        aiService.save(normalizedEndpoint, model, apiKey)
+        aiConfig = aiService.read()
+        message = when {
+            endpointChanged && aiConfig.apiKey.isBlank() -> "接口已变更；为保护密钥，请重新填写 API Key"
+            aiConfig.apiKey.isBlank() -> "已保存服务和模型；请填写 API Key 后再分析"
+            else -> "AI 服务配置已保存"
+        }
+        return true
+    }
+
+    fun importAiAnalysisToDraft(source: String) {
+        if (isAiAnalyzing) return
+        val config = aiConfig
+        if (!config.isComplete) {
+            message = "请先在设置中配置 AI API Key、模型和接口地址"
+            return
+        }
+        isAiAnalyzing = true
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { OpenAiRecipeAnalyzer(config).analyzeCopiedText(source) } }
+                .onSuccess { analysis ->
+                    updateDraft { draft -> draft.applyAnalysis(analysis) }
+                    message = "已导入 AI 整理结果，请核对用量和步骤后保存"
+                }
+                .onFailure { error ->
+                    message = "AI 整理失败：${error.message ?: "请检查复制的内容和 AI 服务配置"}"
+                }
+            isAiAnalyzing = false
+        }
+    }
+
+    fun testAiConnection(endpoint: String, model: String, apiKey: String?) {
+        if (isAiTesting) return
+        val normalizedEndpoint = endpoint.trim()
+        val enteredKey = apiKey?.trim().orEmpty()
+        val effectiveKey = enteredKey.ifBlank {
+            aiConfig.apiKey.takeIf { normalizedEndpoint == aiConfig.endpoint }.orEmpty()
+        }
+        val config = AiServiceConfig(normalizedEndpoint, model.trim(), effectiveKey)
+        if (!config.isComplete) {
+            message = "请填写 HTTPS 接口地址、模型和对应的 API Key"
+            return
+        }
+        isAiTesting = true
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { OpenAiRecipeAnalyzer(config).testConnection() } }
+                .onSuccess { message = "连接测试成功，当前模型可以正常调用" }
+                .onFailure { error -> message = "连接测试失败：${error.message ?: "未知错误"}" }
+            isAiTesting = false
+        }
+    }
+
     private fun resolveVideoReference(input: String): ReferenceVideo {
         val url = extractSharedHttpsUrl(input) ?: error("请输入有效的 HTTPS 分享链接")
         val hints = extractVideoShareHints(input)
@@ -414,6 +485,20 @@ class RecipeViewModel(
     private fun Recipe.imagePaths(): Set<String> =
         (listOf(coverPath) + steps.map { it.imagePath }).filter(String::isNotBlank).toSet()
 
+    private fun Recipe.applyAnalysis(analysis: RecipeAnalysis): Recipe {
+        val existingIngredientNames = ingredients.map { it.name.trim().lowercase() }.toSet()
+        val newIngredients = analysis.ingredients.filter { it.name.lowercase() !in existingIngredientNames }
+        val mergedNotes = listOf(notes.trim(), analysis.notes.trim()).filter { it.isNotBlank() }.distinct().joinToString("\n\n")
+        return copy(
+            name = name.ifBlank { analysis.name },
+            ingredients = ingredients + newIngredients,
+            steps = if (steps.isEmpty()) analysis.steps else steps,
+            notes = mergedNotes,
+            cuisineTags = cuisineTags + analysis.cuisineTags,
+            featureTags = featureTags + analysis.featureTags
+        )
+    }
+
     companion object {
         private const val EDITOR_DRAFT_KEY = "editor_draft"
         private const val EDITOR_BASELINE_KEY = "editor_baseline"
@@ -448,7 +533,9 @@ private fun String.cleanPageTitle(): String = replace(Regex("\\s*[-_|]\\s*(抖�
 enum class PhotoTarget { COVER, STEP }
 
 @Serializable data object RecipesRoute : NavKey
+@Serializable data object EatRoute : NavKey
 @Serializable data object SettingsRoute : NavKey
+@Serializable data object AiSettingsRoute : NavKey
 @Serializable data class RecipeDetailRoute(val recipeId: String) : NavKey
 @Serializable data class RecipeEditorRoute(val recipeId: String? = null) : NavKey
 
@@ -460,6 +547,7 @@ private data class TopDestination(
 
 private val topDestinations = listOf(
     TopDestination(RecipesRoute, "菜谱", Icons.Default.Home),
+    TopDestination(EatRoute, "吃", Icons.Default.Restaurant),
     TopDestination(SettingsRoute, "设置", Icons.Default.Settings)
 )
 
@@ -508,6 +596,7 @@ private fun SavorNotesApp(
             topDestinations.forEach { destination ->
                 val selected = when (destination.route) {
                     RecipesRoute -> current is RecipesRoute || current is RecipeDetailRoute
+                    SettingsRoute -> current == SettingsRoute || current is AiSettingsRoute
                     else -> current == destination.route
                 }
                 item(
@@ -591,7 +680,22 @@ private fun SavorNotesApp(
                             }
                         )
                     }
-                    entry<SettingsRoute> { SettingsScreen(vm) }
+                    entry<EatRoute> {
+                        WhatToEatScreen(
+                            recipes = vm.recipes,
+                            onOpen = { recipe -> backStack.add(RecipeDetailRoute(recipe.id)) },
+                            onAdd = {
+                                vm.beginEditing(null)
+                                backStack.add(RecipeEditorRoute())
+                            }
+                        )
+                    }
+                    entry<SettingsRoute> {
+                        SettingsScreen(vm, onOpenAiSettings = { backStack.add(AiSettingsRoute) })
+                    }
+                    entry<AiSettingsRoute> {
+                        AiServiceSettingsScreen(vm, onDone = { backStack.removeLastOrNull() })
+                    }
                 }
             )
         }
