@@ -4,10 +4,32 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 import java.util.UUID
+import kotlin.random.Random
 
-data class Ingredient(val name: String, val amount: String = "", val unit: String = "") {
-    fun toJson() = JSONObject().put("name", name).put("amount", amount).put("unit", unit)
-    companion object { fun fromJson(o: JSONObject) = Ingredient(o.optString("name"), o.optString("amount"), o.optString("unit")) }
+enum class IngredientCategory(val label: String) {
+    MAIN("主料"), SIDE("配料"), SEASONING("佐料");
+
+    companion object {
+        fun from(value: String): IngredientCategory = entries.firstOrNull {
+            it.name.equals(value, ignoreCase = true) || it.label == value
+        } ?: MAIN
+    }
+}
+
+data class Ingredient(
+    val name: String,
+    val amount: String = "",
+    val unit: String = "",
+    val category: IngredientCategory = IngredientCategory.MAIN
+) {
+    fun displayText(): String = name + listOf(amount, unit).filter(String::isNotBlank).joinToString("")
+    fun toJson() = JSONObject().put("name", name).put("amount", amount).put("unit", unit).put("category", category.name)
+    companion object {
+        fun fromJson(o: JSONObject) = Ingredient(
+            o.optString("name"), o.optString("amount"), o.optString("unit"),
+            IngredientCategory.from(o.optString("category"))
+        )
+    }
 }
 
 data class RecipeStep(val text: String, val imagePath: String = "") {
@@ -114,4 +136,19 @@ fun formatReferenceVideoTitle(author: String, title: String): String = when {
     title.isNotBlank() -> title
     author.isNotBlank() -> author
     else -> "参考视频"
+}
+
+internal fun nextRandomRecipeId(
+    candidateIds: List<String>,
+    seenIds: Set<String>,
+    currentId: String?,
+    randomIndex: (Int) -> Int = { Random.nextInt(it) }
+): Pair<String?, Set<String>> {
+    if (candidateIds.isEmpty()) return null to emptySet()
+    val unseen = candidateIds.filterNot(seenIds::contains)
+    val startsNewCycle = unseen.isEmpty()
+    val cyclePool = if (startsNewCycle) candidateIds else unseen
+    val pool = cyclePool.filterNot { it == currentId }.ifEmpty { cyclePool }
+    val chosen = pool[randomIndex(pool.size)]
+    return chosen to if (startsNewCycle) setOf(chosen) else seenIds + chosen
 }

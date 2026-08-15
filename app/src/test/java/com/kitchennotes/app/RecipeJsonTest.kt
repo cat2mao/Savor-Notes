@@ -9,7 +9,10 @@ import org.json.JSONObject
 class RecipeJsonTest {
     @Test fun recipe_round_trips_all_user_content() {
         val source = Recipe(
-            id = "id-1", name = "青椒土豆丝", ingredients = listOf(Ingredient("土豆", "2", "个")),
+            id = "id-1", name = "青椒土豆丝", ingredients = listOf(
+                Ingredient("土豆", "2", "个", IngredientCategory.MAIN),
+                Ingredient("盐", "少许", "", IngredientCategory.SEASONING)
+            ),
             cuisineTags = setOf("鲁菜"), featureTags = setOf("下饭"), steps = listOf(RecipeStep("切丝"), RecipeStep("快炒", "step.jpg")),
             notes = "大火", videos = listOf(ReferenceVideo("https://example.com/video", "参考")), cookCount = 4
         )
@@ -60,5 +63,34 @@ class RecipeJsonTest {
         val recipe = Recipe.fromJson(legacy)
         assertEquals(RecipeStep("切菜", "one.jpg"), recipe.steps[0])
         assertEquals(RecipeStep("翻炒", "two.jpg"), recipe.steps[1])
+    }
+
+    @Test fun parses_markdown_wrapped_ai_recipe_json() {
+        val analysis = parseRecipeAnalysis("""
+            ```json
+            {"name":"番茄炒蛋","ingredients":[{"name":"番茄","amount":"2","unit":"个","category":"主料"}],"steps":["炒鸡蛋","加入番茄翻炒"],"notes":"少许糖","cuisineTags":["热菜"],"featureTags":["快手","无效标签"]}
+            ```
+        """.trimIndent())
+        assertEquals("番茄炒蛋", analysis.name)
+        assertEquals(Ingredient("番茄", "2", "个"), analysis.ingredients.single())
+        assertEquals(listOf(RecipeStep("炒鸡蛋"), RecipeStep("加入番茄翻炒")), analysis.steps)
+        assertEquals(setOf("热菜"), analysis.cuisineTags)
+        assertEquals(setOf("快手"), analysis.featureTags)
+    }
+
+    @Test fun old_ingredients_default_to_main_and_ai_categories_are_kept() {
+        assertEquals(IngredientCategory.MAIN, Ingredient.fromJson(JSONObject().put("name", "鸡蛋")).category)
+        val analysis = parseRecipeAnalysis("""{"name":"炒菜","ingredients":[{"name":"盐","category":"佐料"}]}""")
+        assertEquals(IngredientCategory.SEASONING, analysis.ingredients.single().category)
+    }
+
+    @Test fun random_picker_avoids_repeats_and_starts_a_new_cycle() {
+        val first = nextRandomRecipeId(listOf("a", "b"), setOf("a"), "a") { 0 }
+        assertEquals("b", first.first)
+        assertEquals(setOf("a", "b"), first.second)
+
+        val nextCycle = nextRandomRecipeId(listOf("a", "b"), first.second, "b") { 0 }
+        assertEquals("a", nextCycle.first)
+        assertEquals(setOf("a"), nextCycle.second)
     }
 }

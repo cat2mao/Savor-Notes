@@ -64,12 +64,14 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.LocalDining
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.UploadFile
@@ -117,6 +119,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -458,12 +461,21 @@ fun RecipeDetailScreen(
 
         DetailSection("食材") {
             if (recipe.ingredients.isEmpty()) MutedEmpty("暂未记录食材")
-            recipe.ingredients.forEachIndexed { index, ingredient ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                    Text(ingredient.name, Modifier.weight(1f))
-                    Text("${ingredient.amount}${ingredient.unit}", fontWeight = FontWeight.Bold)
+            IngredientCategory.entries.forEach { category ->
+                val items = recipe.ingredients.filter { it.category == category }
+                if (items.isNotEmpty()) {
+                    Text(category.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        items.forEach { ingredient ->
+                            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(9.dp)) {
+                                Text(ingredient.displayText(), Modifier.padding(horizontal = 9.dp, vertical = 6.dp))
+                            }
+                        }
+                    }
                 }
-                if (index != recipe.ingredients.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .65f))
             }
         }
 
@@ -535,6 +547,104 @@ private fun DetailSection(title: String, content: @Composable ColumnScope.() -> 
 @Composable
 private fun MutedEmpty(text: String) = Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
+@Composable
+fun WhatToEatScreen(recipes: List<Recipe>, onOpen: (Recipe) -> Unit, onAdd: () -> Unit) {
+    var onlyFavorites by rememberSaveable { mutableStateOf(false) }
+    var avoidRecent by rememberSaveable { mutableStateOf(false) }
+    var selectedTags by remember { mutableStateOf(emptySet<String>()) }
+    var pickedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var seenIds by remember { mutableStateOf(emptySet<String>()) }
+    val recentCutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
+    val presentTags = remember(recipes) {
+        recipes.flatMap { it.cuisineTags + it.featureTags }.distinct().sorted()
+    }
+    val candidates = remember(recipes, onlyFavorites, avoidRecent, selectedTags) {
+        recipes.filter { recipe ->
+            (!onlyFavorites || recipe.favorite) &&
+                (!avoidRecent || recipe.lastCookedAt == 0L || recipe.lastCookedAt < recentCutoff) &&
+                selectedTags.all { it in recipe.cuisineTags || it in recipe.featureTags }
+        }
+    }
+    val candidateIds = candidates.map { it.id }
+    val picked = recipes.firstOrNull { it.id == pickedId }
+
+    LaunchedEffect(candidateIds) {
+        val validIds = candidateIds.toSet()
+        seenIds = seenIds.intersect(validIds)
+        if (pickedId !in validIds) pickedId = null
+    }
+
+    fun pick() {
+        val result = nextRandomRecipeId(candidateIds, seenIds, pickedId)
+        pickedId = result.first
+        seenIds = result.second
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Text("吃", style = MaterialTheme.typography.headlineLarge)
+            Text("不知道吃什么？从自己的菜谱里随机选一道。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (recipes.isEmpty()) item {
+            ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("还没有可以选择的菜谱", style = MaterialTheme.typography.titleMedium)
+                    Text("先添加几道菜，我就能帮你随机选择。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button(onClick = onAdd) { Icon(Icons.Default.Add, null); Text(" 新增菜谱") }
+                }
+            }
+        } else {
+            item {
+                SettingsCard("筛选范围") {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = onlyFavorites, onClick = { onlyFavorites = !onlyFavorites }, label = { Text("只看收藏") })
+                        FilterChip(selected = avoidRecent, onClick = { avoidRecent = !avoidRecent }, label = { Text("避开最近 7 天") })
+                        presentTags.forEach { tag ->
+                            FilterChip(
+                                selected = tag in selectedTags,
+                                onClick = { selectedTags = selectedTags.toggle(tag) },
+                                label = { Text(tag) }
+                            )
+                        }
+                    }
+                }
+            }
+            if (candidates.isEmpty()) item {
+                ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("没有符合条件的菜谱", style = MaterialTheme.typography.titleMedium)
+                        TextButton(onClick = { onlyFavorites = false; avoidRecent = false; selectedTags = emptySet() }) { Text("清除筛选") }
+                    }
+                }
+            } else if (picked == null) item {
+                Button(onClick = ::pick, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(15.dp)) {
+                    Icon(Icons.Default.Restaurant, null); Text(" 帮我选一道")
+                }
+            } else item {
+                ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        RecipeImage(picked.coverPath, Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(16.dp)))
+                        Text(picked.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            (picked.cuisineTags + picked.featureTags).forEach { tag -> AssistChip(onClick = {}, label = { Text(tag) }) }
+                        }
+                        Text("本轮不会重复推荐，全部看过后自动重新开始。", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { onOpen(picked) }) { Text("查看菜谱") }
+                            OutlinedButton(onClick = ::pick) { Icon(Icons.Default.Refresh, null); Text(" 再换一道") }
+                        }
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(42.dp)) }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecipeEditorScreen(
@@ -546,9 +656,6 @@ fun RecipeEditorScreen(
     onDiscard: () -> Unit
 ) {
     val draft = vm.editorDraft ?: return
-    var ingredientName by rememberSaveable(draft.id) { mutableStateOf("") }
-    var ingredientAmount by rememberSaveable(draft.id) { mutableStateOf("") }
-    var ingredientUnit by rememberSaveable(draft.id) { mutableStateOf("") }
     var customTagInput by rememberSaveable(draft.id) { mutableStateOf("") }
     var stepText by rememberSaveable(draft.id) { mutableStateOf("") }
     var editingStepIndex by rememberSaveable(draft.id) { mutableStateOf<Int?>(null) }
@@ -558,15 +665,15 @@ fun RecipeEditorScreen(
     var confirmDiscard by remember { mutableStateOf(false) }
     var revealedDefaultTag by remember { mutableStateOf<String?>(null) }
     var deletingCustomTag by remember { mutableStateOf<String?>(null) }
+    var aiAnalysisText by rememberSaveable(draft.id) { mutableStateOf("") }
     val selectedStep = editingStepIndex?.let(draft.steps::getOrNull)
     val hasPendingStepEdit = if (selectedStep == null) {
         stepText.isNotBlank() || vm.stepImageCandidate.isNotBlank()
     } else {
         stepText != selectedStep.text || vm.stepImageCandidate != selectedStep.imagePath
     }
-    val hasLocalChanges = ingredientName.isNotBlank() || ingredientAmount.isNotBlank() ||
-        ingredientUnit.isNotBlank() || customTagInput.isNotBlank() || hasPendingStepEdit ||
-        videoUrl.isNotBlank()
+    val hasLocalChanges = customTagInput.isNotBlank() || hasPendingStepEdit ||
+        videoUrl.isNotBlank() || aiAnalysisText.isNotBlank()
     val hasPendingChanges = vm.hasUnsavedChanges || hasLocalChanges
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { vm.copyImage(it, photoTarget) }
@@ -610,7 +717,6 @@ fun RecipeEditorScreen(
             onConfirm = { vm.removeTag(tag); deletingCustomTag = null }
         )
     }
-
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding()) {
         EditorTopBar(
             title = if (draft.name.isBlank()) "新增菜谱" else "编辑菜谱",
@@ -700,49 +806,17 @@ fun RecipeEditorScreen(
             }
 
             EditorSection("食材") {
-                draft.ingredients.forEachIndexed { index, ingredient ->
-                    OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
-                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                            OutlinedTextField(
-                                ingredient.name,
-                                { value -> vm.updateDraft { recipe -> recipe.copy(ingredients = recipe.ingredients.toMutableList().also { it[index] = ingredient.copy(name = value) }) } },
-                                Modifier.fillMaxWidth(),
-                                label = { Text("食材名称 *") },
-                                singleLine = true
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedTextField(
-                                    ingredient.amount,
-                                    { value -> vm.updateDraft { recipe -> recipe.copy(ingredients = recipe.ingredients.toMutableList().also { it[index] = ingredient.copy(amount = value) }) } },
-                                    Modifier.weight(1f),
-                                    label = { Text("用量（可选）") },
-                                    singleLine = true
-                                )
-                                OutlinedTextField(
-                                    ingredient.unit,
-                                    { value -> vm.updateDraft { recipe -> recipe.copy(ingredients = recipe.ingredients.toMutableList().also { it[index] = ingredient.copy(unit = value) }) } },
-                                    Modifier.weight(1f),
-                                    label = { Text("单位（可选）") },
-                                    singleLine = true
-                                )
-                                IconButton(onClick = { vm.updateDraft { recipe -> recipe.copy(ingredients = recipe.ingredients.toMutableList().also { it.removeAt(index) }) } }) {
-                                    Icon(Icons.Default.Delete, "删除食材")
-                                }
-                            }
-                        }
-                    }
+                IngredientCategory.entries.forEach { category ->
+                    IngredientGroupEditor(
+                        category = category,
+                        items = draft.ingredients.mapIndexedNotNull { index, ingredient ->
+                            ingredient.takeIf { it.category == category }?.let { index to it }
+                        },
+                        onUpdate = { index, updated -> vm.updateDraft { recipe -> recipe.copy(ingredients = recipe.ingredients.toMutableList().also { it[index] = updated }) } },
+                        onRemove = { index -> vm.updateDraft { recipe -> recipe.copy(ingredients = recipe.ingredients.toMutableList().also { it.removeAt(index) }) } },
+                        onAdd = { ingredient -> vm.updateDraft { it.copy(ingredients = it.ingredients + ingredient) } }
+                    )
                 }
-                OutlinedTextField(ingredientName, { ingredientName = it }, Modifier.fillMaxWidth(), label = { Text("食材名称 *") }, singleLine = true)
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    OutlinedTextField(ingredientAmount, { ingredientAmount = it }, Modifier.weight(1f), label = { Text("用量（可选）") }, singleLine = true)
-                    OutlinedTextField(ingredientUnit, { ingredientUnit = it }, Modifier.weight(1f), label = { Text("单位（可选）") }, singleLine = true)
-                }
-                OutlinedButton(onClick = {
-                    if (ingredientName.isNotBlank()) {
-                        vm.updateDraft { it.copy(ingredients = it.ingredients + Ingredient(ingredientName.trim(), ingredientAmount.trim(), ingredientUnit.trim())) }
-                        ingredientName = ""; ingredientAmount = ""; ingredientUnit = ""
-                    }
-                }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Text("添加食材") }
             }
 
             EditorSection("制作步骤") {
@@ -859,6 +933,30 @@ fun RecipeEditorScreen(
                 }
             }
 
+            EditorSection("AI 文字导入") {
+                Text(
+                    "粘贴一段菜谱相关文字，AI 会整理并填写菜名、食材、步骤、标签和注意事项。",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                OutlinedTextField(
+                    value = aiAnalysisText,
+                    onValueChange = { if (it.length <= 100_000) aiAnalysisText = it },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 170.dp),
+                    label = { Text("粘贴需要识别的文字") },
+                    supportingText = { Text("${aiAnalysisText.length}/100000 · 当前模型：${vm.aiConfig.model}") },
+                    minLines = 7
+                )
+                Button(
+                    onClick = { vm.importAiAnalysisToDraft(aiAnalysisText) },
+                    enabled = aiAnalysisText.isNotBlank() && !vm.isAiAnalyzing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.LocalDining, null)
+                    Text(if (vm.isAiAnalyzing) " 正在分析…" else " 分析并自动填写")
+                }
+            }
+
             Button(
                 onClick = { if (vm.saveDraft() != null) onSaved() },
                 modifier = Modifier.fillMaxWidth().height(50.dp),
@@ -866,6 +964,100 @@ fun RecipeEditorScreen(
             ) { Icon(Icons.Default.Check, null); Text(" 保存菜谱") }
             Spacer(Modifier.height(22.dp))
         }
+    }
+}
+
+@Composable
+private fun IngredientGroupEditor(
+    category: IngredientCategory,
+    items: List<Pair<Int, Ingredient>>,
+    onUpdate: (Int, Ingredient) -> Unit,
+    onRemove: (Int) -> Unit,
+    onAdd: (Ingredient) -> Unit
+) {
+    var newName by rememberSaveable(category.name) { mutableStateOf("") }
+    var newAmount by rememberSaveable(category.name) { mutableStateOf("") }
+    var newUnit by rememberSaveable(category.name) { mutableStateOf("") }
+    var showNewDetails by rememberSaveable(category.name) { mutableStateOf(false) }
+    var expandedIndexes by remember { mutableStateOf(emptySet<Int>()) }
+    var categoryMenuIndex by remember { mutableStateOf<Int?>(null) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text(category.label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        items.forEach { (index, ingredient) ->
+            OutlinedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp)) {
+                Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        OutlinedTextField(
+                            value = ingredient.name,
+                            onValueChange = { onUpdate(index, ingredient.copy(name = it)) },
+                            modifier = Modifier.weight(1f),
+                            label = { Text("食材名称 *") },
+                            singleLine = true
+                        )
+                        TextButton(onClick = { expandedIndexes = expandedIndexes.toggle(index) }) {
+                            Text(if (index in expandedIndexes) "收起" else if (ingredient.amount.isBlank() && ingredient.unit.isBlank()) "用量" else ingredient.displayText().removePrefix(ingredient.name))
+                        }
+                        Box {
+                            IconButton(onClick = { categoryMenuIndex = index }) { Icon(Icons.Default.Tune, "调整食材分类") }
+                            DropdownMenu(expanded = categoryMenuIndex == index, onDismissRequest = { categoryMenuIndex = null }) {
+                                IngredientCategory.entries.filter { it != category }.forEach { target ->
+                                    DropdownMenuItem(
+                                        text = { Text("移到${target.label}") },
+                                        onClick = {
+                                            categoryMenuIndex = null
+                                            onUpdate(index, ingredient.copy(category = target))
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        IconButton(onClick = { onRemove(index) }) { Icon(Icons.Default.Delete, "删除食材") }
+                    }
+                    if (index in expandedIndexes) IngredientAmountFields(
+                        ingredient.amount,
+                        ingredient.unit,
+                        onAmountChange = { onUpdate(index, ingredient.copy(amount = it)) },
+                        onUnitChange = { onUpdate(index, ingredient.copy(unit = it)) }
+                    )
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            OutlinedTextField(
+                value = newName,
+                onValueChange = { newName = it },
+                modifier = Modifier.weight(1f),
+                label = { Text("添加${category.label}") },
+                singleLine = true
+            )
+            TextButton(onClick = { showNewDetails = !showNewDetails }) { Text(if (showNewDetails) "收起" else "用量") }
+            IconButton(onClick = {
+                if (newName.isNotBlank()) {
+                    onAdd(Ingredient(newName.trim(), newAmount.trim(), newUnit.trim(), category))
+                    newName = ""; newAmount = ""; newUnit = ""; showNewDetails = false
+                }
+            }) { Icon(Icons.Default.Add, "添加${category.label}") }
+        }
+        if (showNewDetails) IngredientAmountFields(
+            newAmount,
+            newUnit,
+            onAmountChange = { newAmount = it },
+            onUnitChange = { newUnit = it }
+        )
+    }
+}
+
+@Composable
+private fun IngredientAmountFields(
+    amount: String,
+    unit: String,
+    onAmountChange: (String) -> Unit,
+    onUnitChange: (String) -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+        OutlinedTextField(amount, onAmountChange, Modifier.weight(1f), label = { Text("用量（可选）") }, singleLine = true)
+        OutlinedTextField(unit, onUnitChange, Modifier.weight(1f), label = { Text("单位（可选）") }, singleLine = true)
     }
 }
 
@@ -933,7 +1125,7 @@ private fun EditorSection(title: String, content: @Composable ColumnScope.() -> 
 }
 
 @Composable
-fun SettingsScreen(vm: RecipeViewModel) {
+fun SettingsScreen(vm: RecipeViewModel, onOpenAiSettings: () -> Unit) {
     val backup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri -> uri?.let(vm::export) }
     val restore = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(vm::import) }
     LazyColumn(
@@ -955,7 +1147,122 @@ fun SettingsScreen(vm: RecipeViewModel) {
                 }
             }
         }
+        item {
+            SettingsMenuRow(
+                title = "AI 模型服务",
+                summary = vm.aiConfig.model.takeIf { vm.aiConfig.apiKey.isNotBlank() } ?: "未配置",
+                onClick = onOpenAiSettings
+            )
+        }
         item { Spacer(Modifier.height(42.dp)) }
+    }
+}
+
+@Composable
+fun AiServiceSettingsScreen(vm: RecipeViewModel, onDone: () -> Unit) {
+    var aiEndpoint by rememberSaveable { mutableStateOf(vm.aiConfig.endpoint) }
+    var aiModel by rememberSaveable { mutableStateOf(vm.aiConfig.model) }
+    var aiKey by rememberSaveable { mutableStateOf("") }
+    var aiProviderName by rememberSaveable {
+        mutableStateOf(aiProviderPresets.firstOrNull { it.endpoint == vm.aiConfig.endpoint }?.name ?: CUSTOM_AI_PROVIDER)
+    }
+    val selectedPreset = aiProviderPresets.firstOrNull { it.name == aiProviderName }
+    val presetModels = selectedPreset?.models.orEmpty()
+    val modelChoice = aiModel.takeIf { it in presetModels } ?: CUSTOM_AI_MODEL
+    val hasSavedKey = aiEndpoint.trim() == vm.aiConfig.endpoint && vm.aiConfig.apiKey.isNotBlank()
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding()) {
+        EditorTopBar("AI 模型服务", onDone, null)
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("选择模型服务并填写密钥。API Key 仅加密保存在本机，不会进入备份。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SettingsDropdown(
+                label = "服务厂商",
+                value = aiProviderName,
+                options = aiProviderPresets.map { it.name } + CUSTOM_AI_PROVIDER,
+                onSelected = { name ->
+                    aiProviderName = name
+                    aiProviderPresets.firstOrNull { it.name == name }?.let { preset ->
+                        aiEndpoint = preset.endpoint
+                        aiModel = preset.models.first()
+                    } ?: run { aiEndpoint = ""; aiModel = "" }
+                }
+            )
+            OutlinedTextField(
+                value = aiEndpoint,
+                onValueChange = { aiEndpoint = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Chat Completions 接口地址") },
+                supportingText = { Text(if (selectedPreset == null) "填写完整的 /chat/completions HTTPS 地址。" else "已根据服务厂商自动填写。") },
+                singleLine = true,
+                readOnly = selectedPreset != null
+            )
+            if (selectedPreset != null) SettingsDropdown(
+                label = "模型",
+                value = modelChoice,
+                options = presetModels + CUSTOM_AI_MODEL,
+                onSelected = { choice -> aiModel = if (choice == CUSTOM_AI_MODEL) "" else choice }
+            )
+            if (selectedPreset == null || modelChoice == CUSTOM_AI_MODEL) OutlinedTextField(
+                value = aiModel,
+                onValueChange = { aiModel = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("模型 ID") },
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = aiKey,
+                onValueChange = { aiKey = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(if (hasSavedKey) "更新 API Key（留空则保留）" else "API Key") },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true
+            )
+            Text("修改接口地址会清除旧 API Key；测试连接会产生一次很小的模型调用。", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    if (vm.saveAiConfig(aiEndpoint, aiModel, aiKey.takeIf { it.isNotBlank() })) {
+                        aiKey = ""
+                        onDone()
+                    }
+                }) { Text("保存并使用") }
+                OutlinedButton(
+                    onClick = { vm.testAiConnection(aiEndpoint, aiModel, aiKey.takeIf { it.isNotBlank() }) },
+                    enabled = !vm.isAiTesting
+                ) { Text(if (vm.isAiTesting) "正在测试…" else "测试连接") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsMenuRow(title: String, summary: String, onClick: () -> Unit) {
+    OutlinedCard(onClick = onClick, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(summary, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Icon(Icons.Default.KeyboardArrowDown, "进入")
+        }
+    }
+}
+
+@Composable
+private fun SettingsDropdown(label: String, value: String, options: List<String>, onSelected: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("$label：$value", Modifier.weight(1f), textAlign = TextAlign.Start)
+            Icon(Icons.Default.KeyboardArrowDown, null)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option) },
+                    onClick = { expanded = false; onSelected(option) }
+                )
+            }
+        }
     }
 }
 
@@ -1066,7 +1373,7 @@ private fun DeletablePresetTagChip(
     }
 }
 
-private fun Set<String>.toggle(value: String) = if (value in this) this - value else this + value
+private fun <T> Set<T>.toggle(value: T) = if (value in this) this - value else this + value
 
 private fun openReferenceVideo(context: Context, input: String) {
     val url = extractSharedHttpsUrl(input) ?: return
